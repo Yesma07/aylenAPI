@@ -4,6 +4,7 @@ namespace App\Core;
 
 use App\Core\Request;
 use App\Core\Database;
+use App\Core\Exceptions\HttpException;
 
 abstract class BaseModelController
 {
@@ -15,7 +16,39 @@ abstract class BaseModelController
     public function __construct(Request $request)
     {
         $this->request = $request;
-        $this->db = Database::instance($request->get('context')['company'] ?? null);
+
+        $companyId = $request->getContext('company') ?? null;
+        $this->db = Database::instance($companyId);
+
+        $this->validateActiveUser();
+    }
+
+    protected function validateActiveUser(): void
+    {
+        $userId = $this->request->getContext('user');
+
+        if (!$userId) {
+            throw new HttpException('Falta el ID de usuario en el contexto.', 400);
+        }
+
+        $searchPayload = [
+            'model' => 'usuarios', // el alias lógico, si usas otro como 'r001_usuario', ajústalo
+            'fields_names' => ['id', 'estado', 'alive'],
+            'domain' => json_encode([['id', '=', $userId]]),
+            'context' => $this->request->getBody()['context']
+        ];
+
+        $userResult = $this->db->genericSearch($searchPayload, 'm001_usuarios'); // tabla física
+
+        if (empty($userResult) || !isset($userResult[0])) {
+            throw new HttpException("Usuario con ID {$userId} no encontrado.", 403);
+        }
+
+        $user = $userResult[0];
+
+        if (($user['estado'] ?? null) !== 'Activo' || !($user['alive'] ?? false)) {
+            throw new HttpException("Usuario inactivo o eliminado. No tiene permitido operar.", 403);
+        }
     }
 
     public function search(): array
