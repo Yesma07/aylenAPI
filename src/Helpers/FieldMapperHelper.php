@@ -11,39 +11,48 @@ class FieldMapperHelper
     {
         $redis = new RedisHelper();
         $cacheKey = "field_map:{$companyId}:{$table}";
-
         if ($redis->has($cacheKey)) {
             return $redis->get($cacheKey);
         }
 
         $db = Database::instance($companyId);
-
         $sql = "SELECT column_name FROM information_schema.columns WHERE table_name = ?";
         $columns = $db->fetchAll($sql, [$table]);
 
-        $prefix = self::extractPrefix($table);
+        // Obtener código numérico de la tabla (cfg001 → 001)
+        preg_match('/([a-z]+)(\d+)/', $table, $matches);
+        $tableCode = $matches[2] ?? null;
+        if (!$tableCode) {
+            throw new \Exception("No se pudo extraer el código de la tabla '{$table}'");
+        }
+
+        // Prefijos esperados (campo, relación, auditoría, etc.)
+        $expectedPrefixes = [
+            "f{$tableCode}",   // campos propios
+            "r{$tableCode}",   // relaciones
+            "fc{$tableCode}",  // campo + compañía
+            "rc{$tableCode}",  // relaciones + compañía
+        ];
+
         $map = [];
 
         foreach ($columns as $col) {
-            $name = $col['column_name'];
+            $colName = $col['column_name'];
+            foreach ($expectedPrefixes as $prefix) {
+                if (str_starts_with($colName, $prefix . '_')) {
+                    $logical = substr($colName, strlen($prefix) + 1);
+                    $map[$logical] = $colName;
+                    break;
+                }
+            }
 
-            // Si la columna tiene prefijo tipo "fc001_nombre", extrae "nombre"
-            if (str_starts_with($name, $prefix . '_')) {
-                $logical = substr($name, strlen($prefix) + 1);
-                $map[$logical] = $name;
-            } elseif ($name === 'id' || $name === 'hash') {
-                $map[$name] = $name;
+            // Permitir acceso directo a "id", "hash" (sin prefijo)
+            if (in_array($colName, ['id', 'hash'])) {
+                $map[$colName] = $colName;
             }
         }
 
         $redis->set($cacheKey, $map);
-
         return $map;
-    }
-
-    private static function extractPrefix(string $table): string
-    {
-        $parts = explode('_', $table);
-        return $parts[0]; // ej: fc001
     }
 }

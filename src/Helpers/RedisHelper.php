@@ -35,6 +35,11 @@ class RedisHelper
         return $data ? json_decode($data, true) : null;
     }
 
+    public function getRaw(string $key): ?string
+    {
+        return $this->redis->get($this->key($key)) ?: null;
+    }
+
     public function has(string $key): bool
     {
         return $this->redis->exists($this->key($key)) > 0;
@@ -51,5 +56,20 @@ class RedisHelper
         if (!empty($keys)) {
             $this->redis->del($keys);
         }
+    }
+
+    public function keys(string $pattern = '*'): array
+    {
+        return $this->redis->keys($this->key($pattern));
+    }
+
+    public function info(): array
+    {
+        return $this->redis->info();
+    }
+
+    public function getPrefix(): string
+    {
+        return $this->prefix;
     }
 }

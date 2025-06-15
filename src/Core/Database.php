@@ -7,14 +7,19 @@ use PDOException;
 use App\Core\Exceptions\HttpException;
 use App\Helpers\ModelHelper;
 use App\Helpers\FieldMapperHelper;
+use App\Helpers\RelationResolverHelper;
 
 class Database
 {
     private static array $instances = [];
+    private int $companyId;
     private PDO $pdo;
 
     private function __construct(array $config)
     {
+
+        $this->companyId = $config['company_id'] ?? 0;
+
         try {
             $dsn = "pgsql:host={$config['host']};port={$config['port']};dbname={$config['dbname']}";
             $this->pdo = new PDO($dsn, $config['user'], $config['password'], [
@@ -36,6 +41,7 @@ class Database
                 'dbname'   => $_ENV["DB_COMPANY_{$companyKey}_DBNAME"] ?? null,
                 'user'     => $_ENV["DB_COMPANY_{$companyKey}_USER"] ?? null,
                 'password' => $_ENV["DB_COMPANY_{$companyKey}_PASSWORD"] ?? null,
+                'company_id' => $companyKey
             ];
 
             if (in_array(null, $config, true)) {
@@ -83,62 +89,102 @@ class Database
         $this->pdo->rollBack();
     }
 
-    private function extractPrefix(string $table): string
-    {
-        // El prefijo es lo que va antes del primer guión bajo
-        $parts = explode('_', $table);
-        return $parts[0]; // ej: fc001
-    }
-
     //Definición de Métodos Genéricos
- public function genericSearch(array $payload, string $table): array
-    {
-        $builder = new QueryBuilder($table, 't');
+public function genericSearch(array $payload, string $table): array
+{
+    $builder = new QueryBuilder($table, 't');
+    $joinsMap = []; // Para evitar duplicar joins
+    $fieldMap = FieldMapperHelper::getFieldMap($table, $this->companyId ?? 0);
+    $fields = $payload['fields_names'] ?? ['id'];
 
-        $fields = $payload['fields_names'] ?? [];
-        $prefix = $this->extractPrefix($table);
-
-        // Si está vacío, usa 'id' pero con prefijo
-        if (empty($fields)) {
-            $fields = ['id'];
-        }
-
-        foreach ($fields as $field) {
-            if (str_contains($field, '.')) {
-                // JOIN anidado, ejemplo: area.nombre
-                $parts = explode('.', $field);
-                $alias = substr($parts[0], 0, 1); // ejemplo: a de area
-                $joinTable = "mXXX_{$parts[0]}";
-                $builder->addJoin($joinTable, "{$alias}.id = t.{$parts[0]}_id", $alias);
-                $builder->addSelect("{$alias}.{$parts[1]}", "{$parts[0]}_{$parts[1]}");
-            } else {
-                $realField = $field === 'id' ? 'id' : "{$prefix}_{$field}";
-                $builder->addSelect("t.{$realField}", $field);
+    foreach ($fields as $field) {
+        if (str_contains($field, '.')) {
+            try {
+                $resolved = RelationResolverHelper::resolveNestedRelation($table, $field, $this->companyId);
+            } catch (\Throwable $e) {
+                throw new HttpException("Error al resolver la relación para el campo '{$field}': " . $e->getMessage(), 400);
             }
-        }
 
-        $domain = $payload['domain'] ?? "[]";
-        $parsedDomain = DomainParser::parse($domain);
-
-        if (!empty($parsedDomain)) {
-            foreach ($parsedDomain as $condition) {
-                if (!empty(trim($condition))) {
-                    $builder->addWhere($condition);
+            foreach ($resolved['joins'] as $join) {
+                $joinKey = "{$join['alias']}"; // usa alias como key
+                if (!isset($joinsMap[$joinKey])) {
+                    $builder->addJoin($join['table'], $join['on'], $join['alias']);
+                    $joinsMap[$joinKey] = true;
                 }
             }
+
+            $builder->addSelect("{$resolved['final_alias']}.{$resolved['final_field']}", $resolved['field_alias']);
+        } else {
+            if (!isset($fieldMap[$field])) {
+                throw new HttpException("Campo '{$field}' no encontrado en la tabla '{$table}'.", 400);
+            }
+
+            $realField = $fieldMap[$field];
+            $builder->addSelect("t.{$realField}", $field);
         }
-
-        foreach ($payload['order_by'] ?? [] as $order) {
-            $builder->setOrder($order);
-        }
-
-        $builder->setLimit($payload['limit'] ?? 0);
-        $builder->setOffset($payload['offset'] ?? 0);
-
-        $sql = $builder->build();
-        echo "SQL: {$sql}\n";
-        return $this->fetchAll($sql);
     }
+
+    // DOMINIO
+    $domain = $payload['domain'] ?? '[]';
+    try {
+        $parsedDomain = DomainParser::parse($domain, $fieldMap);
+    } catch (\Throwable $e) {
+        throw new HttpException("Error al procesar el dominio: " . $e->getMessage(), 400);
+    }
+
+    if (!empty($parsedDomain)) {
+        foreach ($parsedDomain as $condition) {
+            if (!empty(trim($condition))) {
+                $builder->addWhere($condition);
+            }
+        }
+    }
+
+    // ORDER BY
+    foreach ($payload['order_by'] ?? [] as $order) {
+        $field = $order['field'] ?? null;
+        $direction = $order['direction'] ?? 'asc';
+
+        if (!$field) continue;
+
+        if (str_contains($field, '.')) {
+            try {
+                $resolved = RelationResolverHelper::resolveNestedRelation($table, $field, $this->companyId);
+            } catch (\Throwable $e) {
+                throw new HttpException("Error al procesar el ordenamiento para '{$field}': " . $e->getMessage(), 400);
+            }
+
+            foreach ($resolved['joins'] as $join) {
+                $joinKey = "{$join['alias']}";
+                if (!isset($joinsMap[$joinKey])) {
+                    $builder->addJoin($join['table'], $join['on'], $join['alias']);
+                    $joinsMap[$joinKey] = true;
+                }
+            }
+
+            $builder->setOrder([
+                'field' => "{$resolved['final_alias']}.{$resolved['final_field']}",
+                'direction' => $direction,
+            ]);
+        } else {
+            if (!isset($fieldMap[$field])) {
+                throw new HttpException("Campo '{$field}' no encontrado para ordenamiento en la tabla '{$table}'.", 400);
+            }
+
+            $builder->setOrder([
+                'field' => "t.{$fieldMap[$field]}",
+                'direction' => $direction,
+            ]);
+        }
+    }
+
+    $builder->setLimit($payload['limit'] ?? 0);
+    $builder->setOffset($payload['offset'] ?? 0);
+
+    $sql = $builder->build();
+    echo "SQL: {$sql}\n";
+    return $this->fetchAll($sql);
+}
 
     public function genericCreate(array $payload, string $table, $pk): array
     {

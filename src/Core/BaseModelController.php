@@ -23,9 +23,6 @@ abstract class BaseModelController
         return $this->db->genericSearch($this->request->getBody(), $this->table);
     }
 
-
-
-
     public function create(): array
     {
         return $this->db->genericCreate($this->request->getBody(), $this->table, $this->primaryKey);

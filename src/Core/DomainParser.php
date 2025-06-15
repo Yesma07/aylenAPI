@@ -4,57 +4,110 @@ namespace App\Core;
 
 class DomainParser
 {
-    public static function parse(string $domain): array
+    public static function parse(string $domain, array $fieldMap): array
     {
-        $domain = trim($domain);
+        $domain = html_entity_decode($domain);
+        $structure = self::normalizeToPhpArray($domain);
 
-        if (empty($domain) || $domain === "[]") {
-            // Puedes cambiar esto a ["1 = 1"] si quieres evitar dominios vacíos
-            return [];
+        if (!is_array($structure)) {
+            throw new \Exception("Dominio inválido, debe ser array");
         }
 
-        return [self::transformDomain($domain)];
+        return self::buildConditions($structure, $fieldMap);
     }
 
-    private static function transformDomain(string $domain): string
+    private static function normalizeToPhpArray(string $input): array
     {
-        // Limpieza básica de formato
-        $domain = preg_replace('/^\[|\]$/', '', $domain); // elimina los [] externos
-        $conditions = [];
+        $input = trim($input);
 
-        // Detectar condiciones OR anidadas
-        if (str_starts_with($domain, 'OR[')) {
-            $isOr = true;
-            $domain = substr($domain, 3, -1); // eliminar OR[ ... ]
-        } else {
-            $isOr = false;
+        // Sustituir True/False estilo Python
+        $input = str_replace(['True', 'False'], ['true', 'false'], $input);
+
+        // Reemplazar paréntesis que encierran tuplas por corchetes
+        $input = preg_replace_callback('/\(([^()]+?)\)/', function ($matches) {
+            return '[' . $matches[1] . ']';
+        }, $input);
+
+        // Convertir comillas simples en dobles
+        $input = str_replace("'", '"', $input);
+
+        // Convertir operadores lógicos OR[ y AND[ en estructura JSON
+        $input = preg_replace_callback('/([A-Z]+)\[/', function ($matches) {
+            return '{"' . $matches[1] . '": [';
+        }, $input);
+
+        // Cerrar llaves por cada apertura de OR/AND
+        $orCount = substr_count($input, '{"OR": [');
+        $andCount = substr_count($input, '{"AND": [');
+        $toClose = $orCount + $andCount;
+
+        $input = rtrim($input);
+        while ($toClose > 0) {
+            $input .= ']}';
+            $toClose--;
         }
 
-        // Separar condiciones individuales
-        preg_match_all("/\('([^']+)',\s*'([^']+)',\s*'?(.*?)'?\)/", $domain, $matches, PREG_SET_ORDER);
+        // Corregir comas colgantes antes de cierre de arreglo
+        $input = preg_replace('/,\s*]/', ']', $input);
 
-        foreach ($matches as $match) {
-            [$full, $field, $operator, $value] = $match;
-            $field = "t.$field";
-            $operator = strtoupper($operator);
+        $parsed = json_decode($input, true);
 
-            if (in_array($operator, ['IN', 'NOT IN'])) {
-                // Convertir a arreglo SQL
-                $value = trim($value, '[]');
-                $items = array_map(fn($v) => "'" . trim($v, " '\"") . "'", explode(',', $value));
-                $value = '(' . implode(', ', $items) . ')';
-                $conditions[] = "$field $operator $value";
-            } else {
-                $value = addslashes($value);
-                $conditions[] = "$field $operator '$value'";
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new \Exception("Dominio mal formado: " . json_last_error_msg());
+        }
+
+        return $parsed;
+    }
+
+    private static function buildConditions(array $domain, array $fieldMap, string $logic = 'AND'): array
+    {
+        $conditions = [];
+
+        foreach ($domain as $key => $item) {
+            if (is_string($key) && in_array($key, ['OR', 'AND'])) {
+                $subConditions = self::buildConditions($item, $fieldMap, $key);
+                $glue = $key === 'OR' ? ' OR ' : ' AND ';
+                $conditions[] = '(' . implode($glue, $subConditions) . ')';
+                continue;
+            }
+
+            if (is_array($item) && count($item) === 3) {
+                [$field, $operator, $value] = $item;
+
+                if (!isset($fieldMap[$field])) {
+                    throw new \Exception("Campo lógico '{$field}' no encontrado en fieldMap.");
+                }
+
+                $column = "t." . $fieldMap[$field];
+
+                if (in_array(strtolower($operator), ['in', 'not in']) && is_array($value)) {
+                    $formattedValue = '(' . implode(', ', array_map([self::class, 'formatValue'], $value)) . ')';
+                } else {
+                    $formattedValue = self::formatValue($value);
+                }
+
+                $conditions[] = "{$column} {$operator} {$formattedValue}";
+            } elseif (is_array($item)) {
+                $subConditions = self::buildConditions($item, $fieldMap, 'AND');
+                $conditions[] = '(' . implode(' AND ', $subConditions) . ')';
             }
         }
 
-        if (empty($conditions)) {
-            return '';
-        }
+        return $conditions;
+    }
 
-        $glue = $isOr ? ' OR ' : ' AND ';
-        return implode($glue, $conditions);
+    private static function formatValue($value): string
+    {
+        if (is_bool($value)) {
+            return $value ? 'TRUE' : 'FALSE';
+        } elseif (is_int($value) || is_float($value)) {
+            return $value;
+        } elseif (is_string($value)) {
+            return "'" . addslashes($value) . "'";
+        } elseif (is_array($value)) {
+            return "'" . json_encode($value) . "'";
+        } else {
+            return "'" . addslashes((string)$value) . "'";
+        }
     }
 }
