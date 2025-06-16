@@ -25,7 +25,7 @@ abstract class BaseModelController
 
     protected function validateActiveUser(): void
     {
-        $userId = $this->request->getContext('user');
+        $userId = $this->request->getContext('user_env');
 
         if (!$userId) {
             throw new HttpException('Falta el ID de usuario en el contexto.', 400);
