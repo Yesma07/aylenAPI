@@ -3,7 +3,7 @@
 namespace App\Core;
 
 use App\Core\Exceptions\HttpException;
-use App\Core\TrytonClient;
+use App\Clients\TrytonClient;
 
 /**
  * Autor: YMARIN

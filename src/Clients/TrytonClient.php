@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Core;
+namespace App\Clients;
 
 use App\Core\Exceptions\HttpException;
 use App\Core\Database;
