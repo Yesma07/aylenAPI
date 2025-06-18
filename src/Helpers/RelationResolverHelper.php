@@ -48,58 +48,53 @@ class RelationResolverHelper
 
     public static function getRelationInfo(string $table, string $logicalField, int $companyId): array
     {
-        $db = Database::instance($companyId);
+        $fieldMap = FieldMapperHelper::getFieldMap($table, $companyId);
 
-        $sql = "
-            SELECT
-                kcu.column_name AS fk_column,
-                ccu.table_name AS related_table,
-                ccu.column_name AS related_column
-            FROM 
-                information_schema.table_constraints AS tc
-            JOIN 
-                information_schema.key_column_usage AS kcu
-                ON tc.constraint_name = kcu.constraint_name
-                AND tc.constraint_schema = kcu.constraint_schema
-            JOIN 
-                information_schema.constraint_column_usage AS ccu
-                ON ccu.constraint_name = tc.constraint_name
-                AND ccu.constraint_schema = tc.constraint_schema
-            WHERE 
-                tc.constraint_type = 'FOREIGN KEY'
-                AND tc.table_name = :table
-        ";
+        // Verifica si el campo lógico existe en el mapeo de esta tabla
+        foreach ($fieldMap as $logic => $physical) {
+            if ($logic === $logicalField) {
+                $db = Database::instance($companyId);
 
-        $results = $db->fetchAll($sql, [
-            ':table' => $table
-        ]);
+                $sql = "
+                    SELECT
+                        kcu.column_name AS fk_column,
+                        ccu.table_name AS related_table,
+                        ccu.column_name AS related_column
+                    FROM 
+                        information_schema.table_constraints AS tc
+                    JOIN 
+                        information_schema.key_column_usage AS kcu
+                        ON tc.constraint_name = kcu.constraint_name
+                        AND tc.constraint_schema = kcu.constraint_schema
+                    JOIN 
+                        information_schema.constraint_column_usage AS ccu
+                        ON ccu.constraint_name = tc.constraint_name
+                        AND ccu.constraint_schema = tc.constraint_schema
+                    WHERE 
+                        tc.constraint_type = 'FOREIGN KEY'
+                        AND tc.table_name = :table
+                        AND kcu.column_name = :column
+                ";
 
-        if (empty($results)) {
-            throw new Exception("No se encontraron claves foráneas en la tabla {$table}.");
-        }
+                $results = $db->fetchAll($sql, [
+                    ':table' => $table,
+                    ':column' => $physical
+                ]);
 
-        foreach ($results as $relation) {
-            $fkColumn = $relation['fk_column'];
-            $relatedTable = $relation['related_table'];
-
-            $normalizedFk = self::normalizeField($fkColumn);
-            $normalizedLogic = self::normalizeField($logicalField);
-
-            if ($normalizedFk === $normalizedLogic || str_ends_with($normalizedFk, '_' . $normalizedLogic)) {
-                return [
-                    'fk_column' => $fkColumn,
-                    'related_table' => $relatedTable,
-                    'related_column' => $relation['related_column'],
-                ];
+                if (!empty($results)) {
+                    $relation = $results[0];
+                    return [
+                        'fk_column' => $physical,
+                        'related_table' => $relation['related_table'],
+                        'related_column' => $relation['related_column'],
+                    ];
+                } else {
+                    throw new Exception("El campo físico '{$physical}' no tiene una clave foránea definida en la tabla '{$table}'.");
+                }
             }
         }
 
-        throw new Exception("No se encontró relación compatible para el campo lógico '{$logicalField}' en la tabla {$table}.");
-    }
-
-    protected static function normalizeField(string $field): string
-    {
-        return preg_replace('/^[a-z]+\d*_/', '', $field); // elimina prefijos tipo fc001_, rc001_, f001_, etc.
+        throw new Exception("No se encontró el campo lógico '{$logicalField}' en la tabla '{$table}'.");
     }
 
     protected static function mapField(string $table, string $logicalField, int $companyId): string

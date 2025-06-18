@@ -36,10 +36,10 @@ class Database
 
         if (!isset(self::$instances[$companyKey])) {
             $config = [
-                'host'     => $_ENV["DB_COMPANY_{$companyKey}_HOST"] ?? null,
-                'port'     => $_ENV["DB_COMPANY_{$companyKey}_PORT"] ?? null,
-                'dbname'   => $_ENV["DB_COMPANY_{$companyKey}_DBNAME"] ?? null,
-                'user'     => $_ENV["DB_COMPANY_{$companyKey}_USER"] ?? null,
+                'host' => $_ENV["DB_COMPANY_{$companyKey}_HOST"] ?? null,
+                'port' => $_ENV["DB_COMPANY_{$companyKey}_PORT"] ?? null,
+                'dbname' => $_ENV["DB_COMPANY_{$companyKey}_DBNAME"] ?? null,
+                'user' => $_ENV["DB_COMPANY_{$companyKey}_USER"] ?? null,
                 'password' => $_ENV["DB_COMPANY_{$companyKey}_PASSWORD"] ?? null,
                 'company_id' => $companyKey
             ];
@@ -100,9 +100,8 @@ class Database
         if (empty($fields)) {
             $fields = ['id'];
         } elseif (!in_array('id', $fields)) {
-            array_unshift($fields, 'id'); // Lo agrega al inicio
+            array_unshift($fields, 'id');
         } else {
-            // Si ya existe pero no en la primera posición, lo reordenamos
             $fields = array_merge(['id'], array_diff($fields, ['id']));
         }
 
@@ -115,7 +114,7 @@ class Database
                 }
 
                 foreach ($resolved['joins'] as $join) {
-                    $joinKey = "{$join['alias']}"; // usa alias como key
+                    $joinKey = "{$join['alias']}";
                     if (!isset($joinsMap[$joinKey])) {
                         $builder->addJoin($join['table'], $join['on'], $join['alias']);
                         $joinsMap[$joinKey] = true;
@@ -136,13 +135,36 @@ class Database
         // DOMINIO
         $domain = $payload['domain'] ?? '[]';
         try {
-            $parsedDomain = DomainParser::parse($domain, $fieldMap);
+            $parsedDomain = DomainParser::parse($domain, $table, $this->companyId);
         } catch (\Throwable $e) {
             throw new HttpException("Error al procesar el dominio: " . $e->getMessage(), 400);
         }
 
+        // Recolectar joins desde domain
         if (!empty($parsedDomain)) {
             foreach ($parsedDomain as $condition) {
+                if (preg_match_all('/([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)/', $condition, $matches, PREG_SET_ORDER)) {
+                    foreach ($matches as $match) {
+                        $alias = $match[1];
+                        $field = $match[2];
+                        $fullField = "{$alias}.{$field}";
+                        $fieldPath = str_replace('_', '.', $alias) . '.' . $field;
+
+                        try {
+                            $resolved = RelationResolverHelper::resolveNestedRelation($table, $fieldPath, $this->companyId);
+                            foreach ($resolved['joins'] as $join) {
+                                $joinKey = "{$join['alias']}";
+                                if (!isset($joinsMap[$joinKey])) {
+                                    $builder->addJoin($join['table'], $join['on'], $join['alias']);
+                                    $joinsMap[$joinKey] = true;
+                                }
+                            }
+                        } catch (\Throwable $e) {
+                            // Ignora si ya está añadido o no es resolvible (para evitar loops infinitos)
+                        }
+                    }
+                }
+
                 if (!empty(trim($condition))) {
                     $builder->addWhere($condition);
                 }
@@ -154,7 +176,8 @@ class Database
             $field = $order['field'] ?? null;
             $direction = $order['direction'] ?? 'asc';
 
-            if (!$field) continue;
+            if (!$field)
+                continue;
 
             if (str_contains($field, '.')) {
                 try {
@@ -194,6 +217,7 @@ class Database
         echo "SQL: {$sql}\n";
         return $this->fetchAll($sql);
     }
+
 
     public function genericCreate(array $payload, string $table, $pk): array
     {
@@ -324,7 +348,7 @@ class Database
         }
 
         //Parsear el dominio
-        $parsedDomain = DomainParser::parse($domain, $fieldMap);
+        $parsedDomain = []; // DomainParser::parse($domain, $fieldMap);
         if (empty($parsedDomain)) {
             throw new HttpException("Dominio no válido o vacío.", 400);
         }
@@ -364,7 +388,7 @@ class Database
         }
 
         //Parsear el dominio
-        $parsedDomain = DomainParser::parse($domain, $fieldMap);
+        $parsedDomain = []; // DomainParser::parse($domain, $fieldMap);
         if (empty($parsedDomain)) {
             throw new HttpException("Dominio no válido o vacío.", 400);
         }

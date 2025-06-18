@@ -32,13 +32,13 @@ abstract class BaseModelController
         }
 
         $searchPayload = [
-            'model' => 'usuarios', // el alias lógico, si usas otro como 'r001_usuario', ajústalo
+            'model' => 'usuarios',
             'fields_names' => ['id', 'estado', 'alive'],
             'domain' => json_encode([['id', '=', $userId]]),
             'context' => $this->request->getBody()['context']
         ];
 
-        $userResult = $this->db->genericSearch($searchPayload, 'm001_usuarios'); // tabla física
+        $userResult = $this->db->genericSearch($searchPayload, 'm001_usuarios');
 
         if (empty($userResult) || !isset($userResult[0])) {
             throw new HttpException("Usuario con ID {$userId} no encontrado.", 403);
@@ -46,7 +46,7 @@ abstract class BaseModelController
 
         $user = $userResult[0];
 
-        if (($user['estado'] ?? null) !== 'Activo' || !($user['alive'] ?? false)) {
+        if (!($user['estado'] ?? false) || !($user['alive'] ?? false)) {
             throw new HttpException("Usuario inactivo o eliminado. No tiene permitido operar.", 403);
         }
     }
@@ -73,6 +73,6 @@ abstract class BaseModelController
 
     public function method(): array
     {
-        return $this->db->genericMethod($this->request->getBody(), $this->table);
+        return $this->db->genericMethod();
     }
 }
