@@ -108,7 +108,19 @@ class DomainParser
         } elseif (is_array($value)) {
             return "'" . json_encode($value) . "'";
         } else {
-            return "'" . addslashes((string)$value) . "'";
+            return "'" . addslashes((string) $value) . "'";
         }
     }
+
+    public static function extractFieldPaths(string $domain): array
+    {
+        $domain = html_entity_decode($domain);
+        $matches = [];
+
+        // Captura todos los field paths: 'algo.algo2.algo3'
+        preg_match_all("/\\('([a-zA-Z0-9_.]+)'/", $domain, $matches);
+
+        return array_unique($matches[1] ?? []);
+    }
+
 }

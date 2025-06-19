@@ -9,6 +9,12 @@ class RelationResolverHelper
 {
     public static function resolveNestedRelation(string $baseTable, string $fieldPath, int $companyId): array
     {
+        $cacheKey = "resolve_nested:{$companyId}:{$baseTable}:" . md5($fieldPath);
+        $redis = new RedisHelper();
+        if ($redis->has($cacheKey)) {
+            return $redis->get($cacheKey);
+        }
+
         $parts = explode('.', $fieldPath);
         $currentTable = $baseTable;
         $previousAlias = 't';
@@ -18,14 +24,15 @@ class RelationResolverHelper
             $isLast = ($i === count($parts) - 1);
 
             if ($isLast) {
-                // Campo final
                 $fieldAlias = implode('_', $parts);
-                return [
+                $result = [
                     'joins' => $joins,
                     'final_alias' => $previousAlias,
                     'final_field' => self::mapField($currentTable, $part, $companyId),
                     'field_alias' => $fieldAlias
                 ];
+                $redis->set($cacheKey, $result);
+                return $result;
             } else {
                 $logicalField = $part;
                 $aliasKey = implode('_', array_slice($parts, 0, $i + 1));
@@ -50,9 +57,14 @@ class RelationResolverHelper
     {
         $fieldMap = FieldMapperHelper::getFieldMap($table, $companyId);
 
-        // Verifica si el campo lógico existe en el mapeo de esta tabla
         foreach ($fieldMap as $logic => $physical) {
             if ($logic === $logicalField) {
+                $redis = new RedisHelper();
+                $cacheKey = "relation_info:{$companyId}:{$table}:{$logicalField}";
+                if ($redis->has($cacheKey)) {
+                    return $redis->get($cacheKey);
+                }
+
                 $db = Database::instance($companyId);
 
                 $sql = "
@@ -82,12 +94,13 @@ class RelationResolverHelper
                 ]);
 
                 if (!empty($results)) {
-                    $relation = $results[0];
-                    return [
+                    $relation = [
                         'fk_column' => $physical,
-                        'related_table' => $relation['related_table'],
-                        'related_column' => $relation['related_column'],
+                        'related_table' => $results[0]['related_table'],
+                        'related_column' => $results[0]['related_column'],
                     ];
+                    $redis->set($cacheKey, $relation);
+                    return $relation;
                 } else {
                     throw new Exception("El campo físico '{$physical}' no tiene una clave foránea definida en la tabla '{$table}'.");
                 }
@@ -108,6 +121,6 @@ class RelationResolverHelper
 
     protected static function generateAlias(string $field): string
     {
-        return str_replace('.', '_', $field); // Ej: usuario_crea → usuario_crea
+        return str_replace('.', '_', $field);
     }
 }

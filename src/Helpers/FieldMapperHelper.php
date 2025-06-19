@@ -19,19 +19,60 @@ class FieldMapperHelper
         $sql = "SELECT column_name FROM information_schema.columns WHERE table_name = ?";
         $columns = $db->fetchAll($sql, [$table]);
 
-        // Obtener código numérico de la tabla (cfg001 → 001)
+        $map = self::buildMapFromColumns($table, $columns);
+        $redis->set($cacheKey, $map);
+        return $map;
+    }
+
+    public static function preloadFieldMaps(array $tables, int $companyId = 0): void
+    {
+        $redis = new RedisHelper();
+        $db = Database::instance($companyId);
+        $pending = [];
+
+        foreach ($tables as $table) {
+            $cacheKey = "field_map:{$companyId}:{$table}";
+            if (!$redis->has($cacheKey)) {
+                $pending[] = $table;
+            }
+        }
+
+        if (empty($pending))
+            return;
+
+        $placeholders = implode(', ', array_fill(0, count($pending), '?'));
+        $sql = "
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_name IN ($placeholders)
+        ";
+
+        $rows = $db->fetchAll($sql, $pending);
+        $grouped = [];
+
+        foreach ($rows as $row) {
+            $grouped[$row['table_name']][] = $row['column_name'];
+        }
+
+        foreach ($grouped as $table => $columns) {
+            $map = self::buildMapFromColumns($table, array_map(fn($c) => ['column_name' => $c], $columns));
+            $redis->set("field_map:{$companyId}:{$table}", $map);
+        }
+    }
+
+    private static function buildMapFromColumns(string $table, array $columns): array
+    {
         preg_match('/([a-z]+)(\d+)/', $table, $matches);
         $tableCode = $matches[2] ?? null;
         if (!$tableCode) {
             throw new \Exception("No se pudo extraer el código de la tabla '{$table}'");
         }
 
-        // Prefijos esperados (campo, relación, auditoría, etc.)
         $expectedPrefixes = [
-            "f{$tableCode}",   // campos propios
-            "r{$tableCode}",   // relaciones
-            "fc{$tableCode}",  // campo + compañía
-            "rc{$tableCode}",  // relaciones + compañía
+            "f{$tableCode}",
+            "r{$tableCode}",
+            "fc{$tableCode}",
+            "rc{$tableCode}",
         ];
 
         $map = [];
@@ -46,13 +87,11 @@ class FieldMapperHelper
                 }
             }
 
-            // Permitir acceso directo a "id", "hash" (sin prefijo)
             if (in_array($colName, ['id', 'hash'])) {
                 $map[$colName] = $colName;
             }
         }
 
-        $redis->set($cacheKey, $map);
         return $map;
     }
 }

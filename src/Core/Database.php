@@ -105,6 +105,7 @@ class Database
             $fields = array_merge(['id'], array_diff($fields, ['id']));
         }
 
+        // Añadir select y joins para fields_names
         foreach ($fields as $field) {
             if (str_contains($field, '.')) {
                 try {
@@ -140,34 +141,28 @@ class Database
             throw new HttpException("Error al procesar el dominio: " . $e->getMessage(), 400);
         }
 
-        // Recolectar joins desde domain
-        if (!empty($parsedDomain)) {
-            foreach ($parsedDomain as $condition) {
-                if (preg_match_all('/([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)/', $condition, $matches, PREG_SET_ORDER)) {
-                    foreach ($matches as $match) {
-                        $alias = $match[1];
-                        $field = $match[2];
-                        $fullField = "{$alias}.{$field}";
-                        $fieldPath = str_replace('_', '.', $alias) . '.' . $field;
+        // Resolver joins desde campos usados en domain
+        $fieldPathsInDomain = DomainParser::extractFieldPaths($domain);
 
-                        try {
-                            $resolved = RelationResolverHelper::resolveNestedRelation($table, $fieldPath, $this->companyId);
-                            foreach ($resolved['joins'] as $join) {
-                                $joinKey = "{$join['alias']}";
-                                if (!isset($joinsMap[$joinKey])) {
-                                    $builder->addJoin($join['table'], $join['on'], $join['alias']);
-                                    $joinsMap[$joinKey] = true;
-                                }
-                            }
-                        } catch (\Throwable $e) {
-                            // Ignora si ya está añadido o no es resolvible (para evitar loops infinitos)
-                        }
+        foreach ($fieldPathsInDomain as $fieldPath) {
+            try {
+                $resolved = RelationResolverHelper::resolveNestedRelation($table, $fieldPath, $this->companyId);
+                foreach ($resolved['joins'] as $join) {
+                    $joinKey = "{$join['alias']}";
+                    if (!isset($joinsMap[$joinKey])) {
+                        $builder->addJoin($join['table'], $join['on'], $join['alias']);
+                        $joinsMap[$joinKey] = true;
                     }
                 }
+            } catch (\Throwable $e) {
+                // Ignorar errores por campos no resolvibles
+            }
+        }
 
-                if (!empty(trim($condition))) {
-                    $builder->addWhere($condition);
-                }
+        // Aplicar condiciones al WHERE
+        foreach ($parsedDomain as $condition) {
+            if (!empty(trim($condition))) {
+                $builder->addWhere($condition);
             }
         }
 
@@ -217,7 +212,6 @@ class Database
         echo "SQL: {$sql}\n";
         return $this->fetchAll($sql);
     }
-
 
     public function genericCreate(array $payload, string $table, $pk): array
     {
